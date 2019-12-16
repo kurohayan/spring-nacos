@@ -45,6 +45,11 @@ public class CloudServiceImpl implements CloudService {
     @NacosInjected
     private NamingService namingService;
 
+    /**
+     * 初始化
+     * cache 缓存
+     * restTemplate调用方法
+     */
     public CloudServiceImpl() {
         cache = CacheBuilder.newBuilder().maximumSize(1000).expireAfterWrite(1, TimeUnit.MINUTES)
                 .build(new CacheLoader<String, AtomicInteger>() {
