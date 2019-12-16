@@ -35,11 +35,36 @@ import java.util.stream.Collectors;
 @Service
 @EnableAsync
 public class CloudServiceImpl implements CloudService {
+    /**
+     * 服务权重随机最大数
+     */
+    private static final int RAND_NUM = 100;
+    /**
+     * 服务数量(偏大即可)
+     */
+    private static final int SERVICE_NUM = 10;
+    /**
+     * 服务不可调用最大次数,超过则从服务列表中去除
+     */
+    private static final int SERVICE_ERROR_THROW_NUM = 5;
+    /**
+     * 服务不可调用的时间范围,比如 SERVICE_ERROR_TIME_OUT分钟内 SERVICE_ERROR_THROW_NUM不可调用则去除该ip
+     */
+    private static final int SERVICE_ERROR_TIME_OUT = 1;
+    /**
+     * 服务链接超时时间
+     */
+    private static final int SERVICE_CONNECT_TIME_OUT = 3000;
+    /**
+     * 服务回调读取数据时间
+     */
+    private static final int SERVICE_READ_TIME_OUT = 30000;
 
     private final ConcurrentHashMap<String, List<String>> routingMap = new ConcurrentHashMap<>();
     private final RestTemplate restTemplate;
     private final Random random = new Random();
     private final ReentrantLock lock = new ReentrantLock();
+    private final ReentrantLock checkLock = new ReentrantLock();
     private final LoadingCache<String, AtomicInteger> cache;
 
     @NacosInjected
@@ -51,16 +76,16 @@ public class CloudServiceImpl implements CloudService {
      * restTemplate调用方法
      */
     public CloudServiceImpl() {
-        cache = CacheBuilder.newBuilder().maximumSize(1000).expireAfterWrite(1, TimeUnit.MINUTES)
+        cache = CacheBuilder.newBuilder().maximumSize(RAND_NUM * SERVICE_NUM * 2).expireAfterWrite(SERVICE_ERROR_TIME_OUT, TimeUnit.MINUTES)
                 .build(new CacheLoader<String, AtomicInteger>() {
-            @Override
-            public AtomicInteger load(String key) throws Exception {
-                return new AtomicInteger();
-            }
-        });
+                    @Override
+                    public AtomicInteger load(String key) throws Exception {
+                        return new AtomicInteger();
+                    }
+                });
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(3000);
-        factory.setReadTimeout(30000);
+        factory.setConnectTimeout(SERVICE_CONNECT_TIME_OUT);
+        factory.setReadTimeout(SERVICE_READ_TIME_OUT);
         restTemplate = new RestTemplate(factory);
     }
 
@@ -227,13 +252,13 @@ public class CloudServiceImpl implements CloudService {
     private String getUri(String serviceName) {
         List<String> list = routingMap.get(serviceName);
         // 判空
-        if (list == null || list.size()==0) {
+        if (list == null || list.size() == 0) {
             // 加锁
             lock.lock();
             try {
                 list = routingMap.get(serviceName);
                 // 再次判空
-                if (list == null || list.size()==0) {
+                if (list == null || list.size() == 0) {
                     // 根据服务名从nacos获取uri列表
                     list = this.getServiceList(serviceName);
                     routingMap.put(serviceName, list);
@@ -310,12 +335,19 @@ public class CloudServiceImpl implements CloudService {
         AtomicInteger num = cache.get(serviceName);
         if (num == null) {
             cache.put(serviceName, new AtomicInteger(1));
-        } else if(num.get() < 5) {
+        } else if(num.get() < SERVICE_ERROR_THROW_NUM) {
             num.incrementAndGet();
         } else {
-            cache.put(serviceName, new AtomicInteger(0));
-            List<String> collect = routingMap.get(serviceName).stream().parallel().filter(s -> !s.equals(uri)).collect(Collectors.toList());
-            routingMap.put(serviceName,collect);
+            checkLock.lock();
+            try {
+                if (cache.get(serviceName).get() != 0) {
+                    cache.put(serviceName, new AtomicInteger(0));
+                    List<String> collect = routingMap.get(serviceName).stream().parallel().filter(s -> !s.equals(uri)).collect(Collectors.toList());
+                    routingMap.put(serviceName,collect);
+                }
+            }finally {
+                checkLock.unlock();
+            }
         }
         return getUriThrow(serviceName, uriSet);
     }
@@ -326,7 +358,6 @@ public class CloudServiceImpl implements CloudService {
      * @return
      */
     private List<String> getServiceList(String serviceName) {
-        int randNum = 100;
         List<String> list = new ArrayList<>(0);
         try {
             // 获取指定serviceName的路由信息
@@ -344,7 +375,7 @@ public class CloudServiceImpl implements CloudService {
                 }
                 list.add(StringUtil.splicingString("http://",instance.getIp(),":",instance.getPort(),"/"));
             } else {
-                list = new ArrayList<>((int)(randNum * 1.1));
+                list = new ArrayList<>((int)(RAND_NUM * 1.1));
                 for (Instance instance : instanceList) {
                     // 非启用或者非健康的跳过
                     if (!(instance.isHealthy() && instance.isEnabled())) {
@@ -360,7 +391,7 @@ public class CloudServiceImpl implements CloudService {
                     }
                     String uri = StringUtil.splicingString("http://",instance.getIp(),":",instance.getPort(),"/");
                     double weight = instance.getWeight();
-                    int num = (int)Math.round(weight* randNum /sum);
+                    int num = (int)Math.round(weight* RAND_NUM /sum);
                     for (int i = 0; i < num; i++) {
                         list.add(uri);
                     }
