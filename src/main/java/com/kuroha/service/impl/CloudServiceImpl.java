@@ -20,6 +20,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,6 +36,7 @@ import java.util.stream.Collectors;
 @Service
 @EnableAsync
 public class CloudServiceImpl implements CloudService {
+
     /**
      * 服务权重随机最大数
      */
@@ -46,7 +48,7 @@ public class CloudServiceImpl implements CloudService {
     /**
      * 服务不可调用最大次数,超过则从服务列表中去除
      */
-    private static final int SERVICE_ERROR_THROW_NUM = 5;
+    private static final int SERVICE_ERROR_THROW_NUM = 3;
     /**
      * 服务不可调用的时间范围,比如 SERVICE_ERROR_TIME_OUT分钟内 SERVICE_ERROR_THROW_NUM不可调用则去除该ip
      */
@@ -59,23 +61,27 @@ public class CloudServiceImpl implements CloudService {
      * 服务回调读取数据时间
      */
     private static final int SERVICE_READ_TIME_OUT = 30000;
+    /**
+     * 服务初始化时间
+     */
+    private static final int SERVICE_INIT_TIME = 3600000;
 
     private final ConcurrentHashMap<String, List<String>> routingMap = new ConcurrentHashMap<>();
+    private final ConcurrentSkipListSet<String> serviceSubscribeSet = new ConcurrentSkipListSet<>();
     private final RestTemplate restTemplate;
     private final Random random = new Random();
     private final ReentrantLock lock = new ReentrantLock();
     private final ReentrantLock checkLock = new ReentrantLock();
     private final LoadingCache<String, AtomicInteger> cache;
 
-    @NacosInjected
-    private NamingService namingService;
+    private final NamingService namingService;
 
     /**
      * 初始化
      * cache 缓存
      * restTemplate调用方法
      */
-    public CloudServiceImpl() {
+    public CloudServiceImpl(NamingService namingService) {
         cache = CacheBuilder.newBuilder().maximumSize(RAND_NUM * SERVICE_NUM * 2).expireAfterWrite(SERVICE_ERROR_TIME_OUT, TimeUnit.MINUTES)
                 .build(new CacheLoader<String, AtomicInteger>() {
                     @Override
@@ -87,6 +93,7 @@ public class CloudServiceImpl implements CloudService {
         factory.setConnectTimeout(SERVICE_CONNECT_TIME_OUT);
         factory.setReadTimeout(SERVICE_READ_TIME_OUT);
         restTemplate = new RestTemplate(factory);
+        this.namingService = namingService;
     }
 
     /**
@@ -263,6 +270,20 @@ public class CloudServiceImpl implements CloudService {
                     list = this.getServiceList(serviceName);
                     routingMap.put(serviceName, list);
                 }
+                // 检测服务是否进行监听
+                if (!serviceSubscribeSet.contains(serviceName)) {
+                    try {
+                        //服务不在监听列表的话,加入监听列表
+                        namingService.subscribe(serviceName, event -> {
+                            log.debug(serviceName + "服务发生变化");
+                            List<String> serviceList = this.getServiceList(serviceName);
+                            routingMap.put(serviceName,serviceList);
+                        });
+                        serviceSubscribeSet.add(serviceName);
+                    } catch (NacosException e) {
+                        e.printStackTrace();
+                    }
+                }
             }finally {
                 // 解锁
                 lock.unlock();
@@ -300,7 +321,7 @@ public class CloudServiceImpl implements CloudService {
      * 初始化路由表
      */
     @Async
-    @Scheduled(fixedDelay = 60000)
+    @Scheduled(fixedDelay = SERVICE_INIT_TIME)
     @Override
     public void initRoutingMap() {
         log.debug("初始化路由表");
