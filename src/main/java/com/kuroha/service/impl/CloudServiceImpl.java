@@ -74,14 +74,15 @@ public class CloudServiceImpl implements CloudService {
     private final ReentrantLock checkLock = new ReentrantLock();
     private final LoadingCache<String, AtomicInteger> cache;
 
-    private final NamingService namingService;
+    @NacosInjected
+    private NamingService namingService;
 
     /**
      * 初始化
      * cache 缓存
      * restTemplate调用方法
      */
-    public CloudServiceImpl(NamingService namingService) {
+    public CloudServiceImpl() {
         cache = CacheBuilder.newBuilder().maximumSize(RAND_NUM * SERVICE_NUM * 2).expireAfterWrite(SERVICE_ERROR_TIME_OUT, TimeUnit.MINUTES)
                 .build(new CacheLoader<String, AtomicInteger>() {
                     @Override
@@ -93,7 +94,6 @@ public class CloudServiceImpl implements CloudService {
         factory.setConnectTimeout(SERVICE_CONNECT_TIME_OUT);
         factory.setReadTimeout(SERVICE_READ_TIME_OUT);
         restTemplate = new RestTemplate(factory);
-        this.namingService = namingService;
     }
 
     /**
