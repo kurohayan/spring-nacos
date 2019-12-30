@@ -11,6 +11,7 @@ import com.google.common.cache.LoadingCache;
 import com.kuroha.service.CloudService;
 import com.kuroha.utility.StringUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.EnableAsync;
@@ -74,15 +75,14 @@ public class CloudServiceImpl implements CloudService {
     private final ReentrantLock checkLock = new ReentrantLock();
     private final LoadingCache<String, AtomicInteger> cache;
 
-    @NacosInjected
-    private NamingService namingService;
+    private final NamingService namingService;
 
     /**
      * 初始化
      * cache 缓存
      * restTemplate调用方法
      */
-    public CloudServiceImpl() {
+    public CloudServiceImpl(NamingService namingService) {
         cache = CacheBuilder.newBuilder().maximumSize(RAND_NUM * SERVICE_NUM * 2).expireAfterWrite(SERVICE_ERROR_TIME_OUT, TimeUnit.MINUTES)
                 .build(new CacheLoader<String, AtomicInteger>() {
                     @Override
@@ -94,6 +94,7 @@ public class CloudServiceImpl implements CloudService {
         factory.setConnectTimeout(SERVICE_CONNECT_TIME_OUT);
         factory.setReadTimeout(SERVICE_READ_TIME_OUT);
         restTemplate = new RestTemplate(factory);
+        this.namingService = namingService;
     }
 
     /**
